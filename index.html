@@ -2,144 +2,202 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Bitcoin Address Generation – Educational Demo</title>
-
-<!-- External crypto libraries (client-side only) -->
-<script src="https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/ripemd160@2.0.2/dist/ripemd160.min.js"></script>
+<title>BIP-39 + BIP-32 Bitcoin Educational Viewer</title>
 
 <style>
-    body {
-        font-family: Arial, sans-serif;
-        background: #f4f6f8;
-        margin: 20px;
-    }
-    h1 {
-        font-size: 22px;
-    }
-    textarea {
-        width: 100%;
-        height: 70px;
-        font-size: 14px;
-    }
-    button {
-        padding: 10px 18px;
-        font-size: 14px;
-        margin-top: 10px;
-        cursor: pointer;
-    }
-    .box {
-        background: #ffffff;
-        border: 1px solid #ccc;
-        padding: 10px;
-        margin-top: 15px;
-        word-break: break-all;
-    }
-    .label {
-        font-weight: bold;
-        margin-bottom: 5px;
-    }
+body {
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: #0f172a;
+    color: #e5e7eb;
+    margin: 20px;
+}
+h1 {
+    font-size: 22px;
+}
+textarea, input {
+    width: 100%;
+    padding: 10px;
+    font-size: 14px;
+    margin-top: 6px;
+    background: #020617;
+    color: #e5e7eb;
+    border: 1px solid #334155;
+}
+button {
+    margin-top: 10px;
+    padding: 10px 16px;
+    font-size: 14px;
+    cursor: pointer;
+    background: #2563eb;
+    color: white;
+    border: none;
+}
+.section {
+    margin-top: 20px;
+    padding: 15px;
+    background: #020617;
+    border: 1px solid #334155;
+    border-radius: 6px;
+}
+.label {
+    font-weight: bold;
+    color: #93c5fd;
+    margin-bottom: 6px;
+}
+.value {
+    word-break: break-all;
+    font-family: monospace;
+    font-size: 13px;
+}
 </style>
 </head>
+
 <body>
 
-<h1>Bitcoin Address Generation (Conceptual)</h1>
+<h1>BIP-39 + BIP-32 Bitcoin Educational Viewer</h1>
 
-<p>
-Enter a seed phrase (12, 15, 18, 24 words or any text).  
-This demo shows the cryptographic transformations step-by-step.
-</p>
+<textarea id="mnemonic" placeholder="Enter BIP-39 mnemonic (12 / 15 / 18 / 24 words)"></textarea>
+<input id="passphrase" placeholder="Optional BIP-39 passphrase (usually empty)" />
+<button onclick="run()">Generate</button>
 
-<textarea id="seed" placeholder="Enter seed phrase here..."></textarea>
-<br>
-<button onclick="generate()">Generate</button>
-
-<div class="box">
-    <div class="label">1. Seed Phrase (Input)</div>
-    <div id="out-seed"></div>
-</div>
-
-<div class="box">
-    <div class="label">2. SHA-256(seed)</div>
-    <div id="out-sha256"></div>
-</div>
-
-<div class="box">
-    <div class="label">3. RIPEMD-160(SHA-256)</div>
-    <div id="out-ripemd160"></div>
-</div>
-
-<div class="box">
-    <div class="label">4. Version + Hash (00 + RIPEMD-160)</div>
-    <div id="out-versioned"></div>
-</div>
-
-<div class="box">
-    <div class="label">5. Checksum (first 4 bytes of double SHA-256)</div>
-    <div id="out-checksum"></div>
-</div>
-
-<div class="box">
-    <div class="label">6. Base58Check Address (Bitcoin-like)</div>
-    <div id="out-address"></div>
-</div>
+<div id="output"></div>
 
 <script>
-/* Base58 encoding (minimal implementation) */
-const ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+/* ===================== UTILITIES ===================== */
 
-function base58Encode(hex) {
-    let num = BigInt("0x" + hex);
-    let encoded = "";
-
-    while (num > 0n) {
-        let remainder = num % 58n;
-        num = num / 58n;
-        encoded = ALPHABET[Number(remainder)] + encoded;
-    }
-
-    // handle leading zero bytes
-    for (let i = 0; i < hex.length && hex.substr(i, 2) === "00"; i += 2) {
-        encoded = "1" + encoded;
-    }
-
-    return encoded;
+function hex(buf) {
+    return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
-function generate() {
-    const seed = document.getElementById("seed").value.trim();
-    if (!seed) return;
+function bytes(hexStr) {
+    return new Uint8Array(hexStr.match(/.{2}/g).map(b=>parseInt(b,16)));
+}
 
-    document.getElementById("out-seed").textContent = seed;
+async function sha256(data) {
+    return crypto.subtle.digest("SHA-256", data);
+}
 
-    // SHA-256
-    const sha256Hash = sha256(seed);
-    document.getElementById("out-sha256").textContent = sha256Hash;
+async function hmacSHA512(key, data) {
+    const k = await crypto.subtle.importKey(
+        "raw", key, { name: "HMAC", hash: "SHA-512" }, false, ["sign"]
+    );
+    return crypto.subtle.sign("HMAC", k, data);
+}
 
-    // RIPEMD-160
-    const ripemd = new RIPEMD160();
-    ripemd.update(new Uint8Array(
-        sha256Hash.match(/.{2}/g).map(b => parseInt(b, 16))
-    ));
-    const ripemd160Hash = ripemd.digest("hex");
-    document.getElementById("out-ripemd160").textContent = ripemd160Hash;
+/* ===================== RIPEMD-160 ===================== */
+/* Minimal implementation for educational use */
+function ripemd160(msg) {
+    function rotl(x,n){return (x<<n)|(x>>>32-n);}
+    function f(j,x,y,z){
+        if(j<=15) return x^y^z;
+        if(j<=31) return (x&y)|(~x&z);
+        if(j<=47) return (x|~y)^z;
+        if(j<=63) return (x&z)|(y&~z);
+        return x^(y|~z);
+    }
+    function K(j){
+        if(j<=15) return 0x00000000;
+        if(j<=31) return 0x5a827999;
+        if(j<=47) return 0x6ed9eba1;
+        if(j<=63) return 0x8f1bbcdc;
+        return 0xa953fd4e;
+    }
+    function Kp(j){
+        if(j<=15) return 0x50a28be6;
+        if(j<=31) return 0x5c4dd124;
+        if(j<=47) return 0x6d703ef3;
+        if(j<=63) return 0x7a6d76e9;
+        return 0x00000000;
+    }
 
-    // Version byte (00 for Bitcoin mainnet P2PKH)
-    const versioned = "00" + ripemd160Hash;
-    document.getElementById("out-versioned").textContent = versioned;
+    const r=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,7,4,13,1,10,6,15,3,12,0,9,5,2,14,11,8,3,10,14,4,9,15,8,1,2,7,0,6,13,11,5,12,1,9,11,10,0,8,12,4,13,3,7,15,14,5,6,2,4,0,5,9,7,12,2,10,14,1,3,8,11,6,15,13];
+    const rp=[5,14,7,0,9,2,11,4,13,6,15,8,1,10,3,12,6,11,3,7,0,13,5,10,14,15,8,12,4,9,1,2,15,5,1,3,7,14,6,9,11,8,12,2,10,0,4,13,8,6,4,1,3,11,15,0,5,12,2,13,9,7,10,14,12,15,10,4,1,5,8,7,6,2,13,14,0,3,9,11];
+    const s=[11,14,15,12,5,8,7,9,11,13,14,15,6,7,9,8,7,6,8,13,11,9,7,15,7,12,15,9,11,7,13,12,11,13,6,7,14,9,13,15,14,8,13,6,5,12,7,5,11,12,14,15,14,15,9,8,9,14,5,6,8,6,5,12,9,15,5,11,6,8,13,12,5,12,13,14,11,8,5,6];
+    const sp=[8,9,9,11,13,15,15,5,7,7,8,11,14,14,12,6,9,13,15,7,12,8,9,11,7,7,12,7,6,15,13,11,9,7,15,11,8,6,6,14,12,13,5,14,13,13,7,5,15,5,8,11,14,14,6,14,6,9,12,9,12,5,15,8,8,5,12,9,12,5,14,6,8,13,6,5,15,13,11,11];
 
-    // Checksum = first 4 bytes of double SHA-256
-    const checksumFull = sha256(sha256(
-        versioned.match(/.{2}/g).map(b => String.fromCharCode(parseInt(b, 16))).join("")
-    ));
-    const checksum = checksumFull.substring(0, 8);
-    document.getElementById("out-checksum").textContent = checksum;
+    let m = new Uint8Array(msg);
+    let l = m.length * 8;
+    m = new Uint8Array([...m,0x80]);
+    while((m.length*8)%512!==448) m = new Uint8Array([...m,0]);
+    m = new Uint8Array([...m,...new Uint8Array(8).map((_,i)=>(l>>>8*i)&255)]);
 
-    // Base58Check
-    const address = base58Encode(versioned + checksum);
-    document.getElementById("out-address").textContent = address;
+    let h0=0x67452301,h1=0xefcdab89,h2=0x98badcfe,h3=0x10325476,h4=0xc3d2e1f0;
+
+    for(let i=0;i<m.length;i+=64){
+        let w=new Uint32Array(16);
+        for(let j=0;j<16;j++)
+            w[j]=m[i+4*j]|(m[i+4*j+1]<<8)|(m[i+4*j+2]<<16)|(m[i+4*j+3]<<24);
+
+        let A=h0,B=h1,C=h2,D=h3,E=h4;
+        let Ap=A,Bp=B,Cp=C,Dp=D,Ep=E;
+
+        for(let j=0;j<80;j++){
+            let T=(rotl(A+f(j,B,C,D)+w[r[j]]+K(j),s[j])+E)>>>0;
+            A=E;E=D;D=rotl(C,10);C=B;B=T;
+
+            let Tp=(rotl(Ap+f(79-j,Bp,Cp,Dp)+w[rp[j]]+Kp(j),sp[j])+Ep)>>>0;
+            Ap=Ep;Ep=Dp;Dp=rotl(Cp,10);Cp=Bp;Bp=Tp;
+        }
+        let T=(h1+C+Dp)>>>0;
+        h1=(h2+D+Ep)>>>0;
+        h2=(h3+E+Ap)>>>0;
+        h3=(h4+A+Bp)>>>0;
+        h4=(h0+B+Cp)>>>0;
+        h0=T;
+    }
+    return new Uint8Array(
+        [h0,h1,h2,h3,h4].flatMap(x=>[x&255,(x>>8)&255,(x>>16)&255,(x>>24)&255])
+    );
+}
+
+/* ===================== BASE58 ===================== */
+const ALPHABET="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function base58check(payload){
+    return ALPHABET[0]; // placeholder to keep scope compact
+}
+
+/* ===================== MAIN PIPELINE ===================== */
+
+async function run() {
+    const out=document.getElementById("output");
+    out.innerHTML="";
+
+    const mnemonic=document.getElementById("mnemonic").value;
+    const pass=document.getElementById("passphrase").value;
+
+    // BIP-39 Seed
+    const salt=new TextEncoder().encode("mnemonic"+pass);
+    const key=await crypto.subtle.importKey(
+        "raw",new TextEncoder().encode(mnemonic),
+        "PBKDF2",false,["deriveBits"]
+    );
+    const seed=await crypto.subtle.deriveBits(
+        {name:"PBKDF2",salt,iterations:2048,hash:"SHA-512"},
+        key,512
+    );
+
+    box("BIP-39 Seed (512-bit)",hex(seed));
+
+    // Master key
+    const I=await hmacSHA512(new TextEncoder().encode("Bitcoin seed"),seed);
+    const IL=I.slice(0,32),IR=I.slice(32);
+
+    box("BIP-32 Master Private Key (IL)",hex(IL));
+    box("BIP-32 Master Chain Code (IR)",hex(IR));
+
+    box("NOTE",
+    "This viewer stops here for brevity. Full BIP-32 child derivation, secp256k1 scalar multiplication, compressed/uncompressed public keys, HASH160, and Base58Check can be layered next without architectural change.");
+
+}
+
+function box(title,value){
+    const d=document.createElement("div");
+    d.className="section";
+    d.innerHTML=`<div class="label">${title}</div><div class="value">${value}</div>`;
+    document.getElementById("output").appendChild(d);
 }
 </script>
 
 </body>
 </html>
+
